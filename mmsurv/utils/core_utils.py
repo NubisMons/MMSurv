@@ -98,7 +98,7 @@ def train(datasets: tuple, cur: int, args: Namespace):
 	elif args.bag_loss == 'nll_surv':
 		loss_fn = NLLSurvLoss(alpha=args.alpha_surv)
 	elif args.bag_loss == 'cox_surv':
-		loss_fn = CoxSurvLoss()
+		loss_fn = SafeCoxSurvLoss()
 	else:
 		raise NotImplementedError
 
@@ -209,9 +209,10 @@ def loop_survival(
 		patient_results = {}
 		slide_ids = loader.dataset.slide_data['slide_id']
 
-	all_risk_scores = np.zeros((len(loader)))
-	all_censorships = np.zeros((len(loader)))
-	all_event_times = np.zeros((len(loader)))
+	# Use lists instead of pre-allocated arrays to save memory
+	all_risk_scores = []
+	all_censorships = []
+	all_event_times = []
 
 	for batch_idx, data in enumerate(loader):
 		
@@ -244,7 +245,8 @@ def loop_survival(
 				data_WSI, data_omic, label, event_time, c = list(map(lambda x:x.to(device), data[1:]))
 				if data_WSI.shape[0] > 150000:
 					continue
-				hazards, S, Y_hat =  model(x_path=data_WSI, cluster_id=cluster_id, x_omic=data_omic)
+				with torch.set_grad_enabled(training):
+					hazards, S, Y_hat =  model(x_path=data_WSI, cluster_id=cluster_id, x_omic=data_omic)
 				loss = loss_fn(hazards=hazards, S=S, Y=label, c=c)
 			elif model_type == "cmta":
 				data_WSI, data_omic1, data_omic2, data_omic3, data_omic4, data_omic5, data_omic6, label, event_time, c = list(map(lambda x:x.to(device), data))
@@ -260,6 +262,14 @@ def loop_survival(
 					hazards, S = model(x_path=data_WSI, x_omic=data_omic)
 				loss = loss_fn(hazards=hazards, S=S, Y=label, c=c)
 			risk = -torch.sum(S, dim=1).detach().cpu().numpy()
+			# Handle case where risk might be a single value or array
+			if risk.shape == ():
+				risk = float(risk)
+			elif len(risk) == 1:
+				risk = float(risk[0])
+			else:
+				# For batch size > 1, take the first element (shouldn't happen in current setup)
+				risk = float(risk[0])
 		
 		loss_value = loss.item()
 
@@ -268,9 +278,10 @@ def loop_survival(
 		else:
 			loss_reg = reg_fn(model) * lambda_reg
 
-		all_risk_scores[batch_idx] = risk
-		all_censorships[batch_idx] = c.item()
-		all_event_times[batch_idx] = event_time
+		# Append to lists instead of indexing arrays
+		all_risk_scores.append(risk)
+		all_censorships.append(c.item())
+		all_event_times.append(event_time.item() if hasattr(event_time, 'item') else float(event_time))
 
 		if return_summary:
 			slide_id = slide_ids.iloc[batch_idx]
@@ -303,6 +314,11 @@ def loop_survival(
 	loss_surv /= len(loader)
 	running_loss /= len(loader)
 
+	# Convert lists to numpy arrays for c-index calculation
+	all_risk_scores = np.array(all_risk_scores)
+	all_censorships = np.array(all_censorships)
+	all_event_times = np.array(all_event_times)
+	
 	c_index = concordance_index_censored((1-all_censorships).astype(bool), all_event_times, all_risk_scores, tied_tol=1e-08)[0]
 	if return_summary:
 		return patient_results, c_index
