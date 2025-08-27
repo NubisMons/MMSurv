@@ -354,7 +354,7 @@ class NLLSurvLoss(object):
 
 
 class CoxSurvLoss(object):
-	def __call__(hazards, S, c, **kwargs):
+	def __call__(self, hazards, S, c, **kwargs):
 		# This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
 		# Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
 		current_batch_len = len(S)
@@ -367,6 +367,42 @@ class CoxSurvLoss(object):
 		theta = hazards.reshape(-1)
 		exp_theta = torch.exp(theta)
 		loss_cox = -torch.mean((theta - torch.log(torch.sum(exp_theta*R_mat, dim=1))) * (1-c))
+		return loss_cox
+
+
+class SafeCoxSurvLoss(object):
+	def __init__(self, eps=1e-7):
+		self.eps = eps
+		
+	def __call__(self, hazards, S, c, **kwargs):
+		# This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
+		# Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
+		# Enhanced with proper device handling and numerical stability
+		
+		# Get device from input tensors to ensure consistency
+		target_device = hazards.device
+		current_batch_len = len(S)
+		
+		# Create risk matrix with proper device handling
+		R_mat = np.zeros([current_batch_len, current_batch_len], dtype=int)
+		for i in range(current_batch_len):
+			for j in range(current_batch_len):
+				R_mat[i,j] = S[j] >= S[i]
+
+		# Convert to tensor with proper device and dtype
+		R_mat = torch.FloatTensor(R_mat).to(target_device)
+		
+		# Reshape hazards and apply numerical stability
+		theta = hazards.reshape(-1)
+		exp_theta = torch.exp(theta)
+		
+		# Add numerical stability to avoid log(0) and handle edge cases
+		risk_scores = torch.sum(exp_theta * R_mat, dim=1)
+		risk_scores = torch.clamp(risk_scores, min=self.eps)
+		
+		# Calculate Cox loss with proper gradient handling
+		loss_cox = -torch.mean((theta - torch.log(risk_scores)) * (1-c))
+		
 		return loss_cox
 
 def l1_reg_all(model, reg_type=None):
