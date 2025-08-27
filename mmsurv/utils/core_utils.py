@@ -245,7 +245,8 @@ def loop_survival(
 				data_WSI, data_omic, label, event_time, c = list(map(lambda x:x.to(device), data[1:]))
 				if data_WSI.shape[0] > 150000:
 					continue
-				hazards, S, Y_hat =  model(x_path=data_WSI, cluster_id=cluster_id, x_omic=data_omic)
+				with torch.set_grad_enabled(training):
+					hazards, S, Y_hat =  model(x_path=data_WSI, cluster_id=cluster_id, x_omic=data_omic)
 				loss = loss_fn(hazards=hazards, S=S, Y=label, c=c)
 			elif model_type == "cmta":
 				data_WSI, data_omic1, data_omic2, data_omic3, data_omic4, data_omic5, data_omic6, label, event_time, c = list(map(lambda x:x.to(device), data))
